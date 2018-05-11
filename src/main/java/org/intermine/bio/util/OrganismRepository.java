@@ -1,7 +1,7 @@
 package org.intermine.bio.util;
 
 /*
- * Copyright (C) 2002-2016 FlyMine
+ * Copyright (C) 2002-2017 FlyMine
  *
  * This code may be freely distributed and modified under the
  * terms of the GNU Lesser General Public Licence.  This should
@@ -20,13 +20,17 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import org.apache.commons.collections.keyvalue.MultiKey;
+import org.apache.log4j.Logger;
+
 
 /**
  * A class to hold information about organisms.
  * @author Kim Rutherford
  */
-public final class OrganismRepository
-{
+public final class OrganismRepository {
+    
+    protected static final Logger LOG = Logger.getLogger(OrganismRepository.class);
+
     private static OrganismRepository or = null;
     private Map<Integer, OrganismData> taxonMap = new HashMap<Integer, OrganismData>();
     private Map<String, OrganismData> abbreviationMap = new HashMap<String, OrganismData>();
@@ -36,7 +40,8 @@ public final class OrganismRepository
     private Map<String, String> organismsWithStrains = new HashMap<String, String>();
     private static Map<String, OrganismData> uniprotToTaxon = new HashMap<String, OrganismData>();
 
-    private static final String PROP_FILE = "organism_config.properties";
+    private static final String DEFAULT_PROP_FILE = "default_organism_config.properties";
+    private static final String MINE_PROP_FILE = "organism_config.properties";
     private static final String PREFIX = "taxon";
 
     private static final String ABBREVIATION = "abbreviation";
@@ -62,16 +67,23 @@ public final class OrganismRepository
     public static OrganismRepository getOrganismRepository() {
         if (or == null) {
             Properties props = new Properties();
+            String whichPropFile = MINE_PROP_FILE;
             try {
-                InputStream propsResource =
-                    OrganismRepository.class.getClassLoader().getResourceAsStream(PROP_FILE);
+                InputStream propsResource = OrganismRepository.class.getClassLoader().getResourceAsStream(MINE_PROP_FILE);
                 if (propsResource == null) {
-                    throw new RuntimeException("can't find " + PROP_FILE + " in class path");
+                    LOG.info("Can't find MINE_PROP_FILE "+whichPropFile+" in class path.");
+                    propsResource = OrganismRepository.class.getClassLoader().getResourceAsStream(DEFAULT_PROP_FILE);
+                    whichPropFile = DEFAULT_PROP_FILE;
+                    if (propsResource == null) {
+                        throw new RuntimeException("can't find " + whichPropFile + " in class path");
+                    }
+                } else {
+                    LOG.info("Found MINE_PROP_FILE "+whichPropFile+" in class path.");
                 }
                 props.load(propsResource);
 
             } catch (IOException e) {
-                throw new RuntimeException("Problem loading properties '" + PROP_FILE + "'", e);
+                throw new RuntimeException("Problem loading properties '" + whichPropFile + "'", e);
             }
 
             or = new OrganismRepository();
@@ -125,16 +137,19 @@ public final class OrganismRepository
                                                    + name);
                     }
                 } else {
-                    throw new RuntimeException("properties in " + PROP_FILE + " must start with "
+                    throw new RuntimeException("properties in " + whichPropFile + " must start with "
                                                + PREFIX + ".");
                 }
             }
 
             for (OrganismData od: or.taxonMap.values()) {
-                or.genusSpeciesMap.put(new MultiKey(od.getGenus(), od.getSpecies()), od);
-                // we have some organisms from uniprot that don't have a short name
-                if (od.getShortName() != null) {
-                    or.shortNameMap.put(od.getShortName(), od);
+                if (od.getGenus()!=null && od.getSpecies()!=null) {
+                    or.genusSpeciesMap.put(new MultiKey(od.getGenus(), od.getSpecies()), od);
+                    LOG.info("Added "+od.getGenus()+":"+od.getSpecies()+" to genusSpeciesMap.");
+                    // we have some organisms from uniprot that don't have a short name
+                    if (od.getShortName() != null) {
+                        or.shortNameMap.put(od.getShortName(), od);
+                    }
                 }
             }
         }
@@ -170,21 +185,6 @@ public final class OrganismRepository
         if (od == null) {
             od = strains.get(taxonId);
         }
-        return od;
-    }
-
-    /**
-     * Create an OrganismData for a given taxon ID, genus, species and variety.
-     *
-     * @param taxonId taxon ID for organism
-     * @param variety variety within species
-     */
-    public OrganismData createOrganismDataByTaxonGenusSpeciesVariety(int taxonId, String genus, String species, String variety) {
-        OrganismData od = new OrganismData();
-        od.setTaxonId(taxonId);
-        od.setGenus(genus);
-        od.setSpecies(species);
-        od.setVariety(variety);
         return od;
     }
 
@@ -259,5 +259,20 @@ public final class OrganismRepository
     public String getStrain(String taxonString) {
         return organismsWithStrains.get(taxonString);
     }
-        
+
+    /**
+     * Create an OrganismData for a given taxon ID, genus, species and variety.
+     *
+     * @param taxonId taxon ID for organism
+     * @param variety variety within species
+     */
+    public OrganismData createOrganismDataByTaxonGenusSpeciesVariety(int taxonId, String genus, String species, String variety) {
+	OrganismData od = new OrganismData();
+	od.setTaxonId(taxonId);
+	od.setGenus(genus);
+	od.setSpecies(species);
+	od.setVariety(variety);
+	return od;
+    }
+
 }

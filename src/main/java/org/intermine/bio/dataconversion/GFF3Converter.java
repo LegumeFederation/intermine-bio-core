@@ -37,7 +37,10 @@ import org.intermine.xml.full.Item;
 import org.intermine.xml.full.Reference;
 
 /**
- * Class to read a GFF3 source data and produce a data representation
+ * Class to read a GFF3 source data and produce a data representation.
+ *
+ * SH HACK 1 - override Chromosome with Supercontig if sequence name contains "scaffold" and we've got Supercontig in the data model.
+ * SH HACK 2 - create ID from parent.start.finish if ID attribute is missing.
  *
  * @author Wenyan Ji
  * @author Richard Smith
@@ -46,8 +49,8 @@ import org.intermine.xml.full.Reference;
  * @author Sam Hokin
  */
 
-public class GFF3Converter extends DataConverter
-{
+public class GFF3Converter extends DataConverter {
+    
     private static final Logger LOG = Logger.getLogger(GFF3Converter.class);
     private Reference orgRef;
     private String seqClsName, orgTaxonId;
@@ -74,8 +77,7 @@ public class GFF3Converter extends DataConverter
     /**
      * Constructor
      * @param writer ItemWriter
-     * @param seqClsName The class of the coordinate system for this GFF3 file (generally
-     * Chromosome)
+     * @param seqClsName The class of the coordinate system for this GFF3 file (generally Chromosome)
      * @param orgTaxonId The taxon ID of the organism we are loading
      * @param dataSourceName name for dataSource
      * @param dataSetTitle title for dataSet
@@ -85,8 +87,8 @@ public class GFF3Converter extends DataConverter
      * @throws ObjectStoreException if something goes wrong
      */
     public GFF3Converter(ItemWriter writer, String seqClsName, String orgTaxonId,
-            String dataSourceName, String dataSetTitle, Model tgtModel,
-            GFF3RecordHandler handler, GFF3SeqHandler sequenceHandler) throws ObjectStoreException {
+                         String dataSourceName, String dataSetTitle, Model tgtModel,
+                         GFF3RecordHandler handler, GFF3SeqHandler sequenceHandler) throws ObjectStoreException {
         super(writer, tgtModel);
         this.seqClsName = seqClsName;
         this.orgTaxonId = orgTaxonId;
@@ -103,7 +105,7 @@ public class GFF3Converter extends DataConverter
         }
 
         setStoreHook(new BioStoreHook(tgtModel, dataSet.getIdentifier(),
-                dataSource.getIdentifier(), BioConverterUtil.getOntology(this)));
+                                      dataSource.getIdentifier(), BioConverterUtil.getOntology(this)));
 
         handler.setConverter(this);
         handler.setIdentifierMap(identifierMap);
@@ -118,10 +120,10 @@ public class GFF3Converter extends DataConverter
         Properties gffConfig = new Properties();
         try {
             gffConfig.load(getClass().getClassLoader().getResourceAsStream(
-                    PROP_FILE));
+                                                                           PROP_FILE));
         } catch (IOException e) {
             throw new RuntimeException("I/O Problem loading properties '"
-                    + PROP_FILE + "'", e);
+                                       + PROP_FILE + "'", e);
         }
         for (Map.Entry<Object, Object> entry : gffConfig.entrySet()) {
             if (entry.getKey().toString().contains("terms")) {
@@ -131,18 +133,19 @@ public class GFF3Converter extends DataConverter
                         termArray[i] = termArray[i].trim();
                     }
                     configTerm.put(
-                            entry.getKey().toString().split("\\.")[0],
-                            new HashSet<String>(Arrays.asList(termArray)));
+                                   entry.getKey().toString().split("\\.")[0],
+                                   new HashSet<String>(Arrays.asList(termArray)));
                 }
             } else if (entry.getKey().toString().contains("excludes")) {
                 if (entry.getValue() != null || !((String) entry.getValue()).trim().isEmpty()) {
                     String[] excludeArray = ((String) entry.getValue()).trim().split(",");
                     for (int i = 0; i < excludeArray.length; i++) { // Trim each string in the array
                         excludeArray[i] = excludeArray[i].trim();
+			LOG.info("Excluding "+excludeArray[i]);
                     }
                     configExclude.put(
-                            entry.getKey().toString().split("\\.")[0],
-                            new HashSet<String>(Arrays.asList(excludeArray)));
+                                      entry.getKey().toString().split("\\.")[0],
+                                      new HashSet<String>(Arrays.asList(excludeArray)));
                 }
             } else if (entry.getKey().toString().contains("attributes")) {
                 if (entry.getValue() != null || !((String) entry.getValue()).trim().isEmpty()) {
@@ -154,8 +157,8 @@ public class GFF3Converter extends DataConverter
                         String attr = entry.getKey().toString().split("\\.")[2];
                         if (keyBits.length > 3) {
                             attr = keyStr.substring(
-                                    keyStr.indexOf("attributes.") + 11,
-                                    keyStr.length());
+                                                    keyStr.indexOf("attributes.") + 11,
+                                                    keyStr.length());
                         }
                         String field = ((String) entry.getValue()).trim();
                         if (configAttr.get(taxonid) == null) {
@@ -175,8 +178,8 @@ public class GFF3Converter extends DataConverter
                         String attr = entry.getKey().toString().split("\\.")[3];
                         if (keyBits.length > 4) {
                             attr = keyStr.substring(
-                                    keyStr.indexOf("attributes.") + 11,
-                                    keyStr.length());
+                                                    keyStr.indexOf("attributes.") + 11,
+                                                    keyStr.length());
                         }
                         String field = ((String) entry.getValue()).trim();
                         if (configAttr.get(taxonid) == null) {
@@ -214,8 +217,17 @@ public class GFF3Converter extends DataConverter
         for (Iterator<?> i = GFF3Parser.parse(bReader); i.hasNext();) {
             record = (GFF3Record) i.next();
 
-            // we can't have the same type:ID twice, which we have e.g. same exon with two different transcript parents
-            String typeId = record.getType()+":"+getIdOrName(record);
+            String typeId = null;
+            
+            // if we have no ID or Name attribute, but have Parent, cook a (hopefully unique) ID from Parent.start.finish
+            if (getIdOrName(record)==null && record.getParents()!=null) {
+                typeId = record.getType()+":"+createIdFromParent(record);
+            } else {
+                // we can't have the same type:ID twice, which we have e.g. same exon with two different transcript parents
+                typeId = record.getType()+":"+getIdOrName(record);
+            }
+                
+            // check against already-processed typeIds
             boolean duplicate = false;
             if (processedIds.contains(typeId)) {
                 duplicatedIds.add(typeId);
@@ -238,10 +250,7 @@ public class GFF3Converter extends DataConverter
                 start = System.currentTimeMillis();
             }
         }
-        // if (duplicates) {
-        //     LOG.error("Duplicated IDs in GFF file: " + duplicatedIds);
-        //     throw new IllegalArgumentException("Duplicated IDs in GFF file: " + duplicatedIds);
-        // }
+
     }
 
     /**
@@ -286,8 +295,14 @@ public class GFF3Converter extends DataConverter
             }
         }
 
-        // By default, use ID field in attributes; else use Name (SH)
-        String primaryIdentifier = getIdOrName(record);
+        String primaryIdentifier = null;
+        if (getIdOrName(record)!=null) {
+            // use ID field in attributes; else use Name (SH)
+            primaryIdentifier = getIdOrName(record);
+        } else if (record.getParents()!=null) {
+            // if no ID or Name attribute, but Parent exists, use that (SH)
+            primaryIdentifier = createIdFromParent(record);
+        }
         // If pid set in gff_config.propeties, look for the attribute field, e.g. locus_tag
         if (configAttr.containsKey(this.orgTaxonId)) {
             if (configAttr.get(this.orgTaxonId).containsKey("primaryIdentifier")) {
@@ -296,6 +311,7 @@ public class GFF3Converter extends DataConverter
                 primaryIdentifier = getPrimaryIdentifier(record, term);
             }
         }
+
         String refId = identifierMap.get(primaryIdentifier);
         handler.clear(); // get rid of previous record Items from handler
         Item seq = getSeq(record.getSequenceID());
@@ -304,8 +320,8 @@ public class GFF3Converter extends DataConverter
         ClassDescriptor cd = tgtModel.getClassDescriptorByName(fullClassName);
         if (cd == null) {
             throw new IllegalArgumentException("no class found in model for: " + className
-                    + " (original GFF record type: " + term + ") for "
-                    + "record: " + record);
+                                               + " (original GFF record type: " + term + ") for "
+                                               + "record: " + record);
         }
 
         Set<Item> synonymsToAdd = new HashSet<Item>();
@@ -313,6 +329,10 @@ public class GFF3Converter extends DataConverter
         if (refId == null) {         // new feature
             feature = createItem(className);
             refId = feature.getIdentifier();
+        }
+
+        if (primaryIdentifier != null) {
+            feature.setAttribute("primaryIdentifier", primaryIdentifier);
         }
 
         if (!"chromosome".equals(term) && seq!=null) {
@@ -325,9 +345,6 @@ public class GFF3Converter extends DataConverter
             return;
         }
 
-        if (primaryIdentifier != null) {
-            feature.setAttribute("primaryIdentifier", primaryIdentifier);
-        }
         handler.setFeature(feature);
         identifierMap.put(primaryIdentifier, feature.getIdentifier());
 
@@ -455,13 +472,13 @@ public class GFF3Converter extends DataConverter
             String cls = configAttrClass.get(this.orgTaxonId).get("synonym");
             if ("all".equals(cls) || term.equals(cls)) {
                 String synonymAttr = configAttr.get(this.orgTaxonId).get(
-                        "synonym");
+                                                                         "synonym");
                 if (synonymAttr.contains("Dbxref")
-                        && record.getDbxrefs() != null) {
+                    && record.getDbxrefs() != null) {
                     String synonymAttrPrefix = synonymAttr.split("\\.")[1];
                     Set<String> synSet = new HashSet<String>();
                     for (Iterator<?> i = record.getDbxrefs().iterator(); i
-                            .hasNext();) {
+                             .hasNext();) {
                         String xref = (String) i.next();
                         if (xref.contains(synonymAttrPrefix)) {
                             synSet.add(xref.split(":")[1]);
@@ -477,7 +494,7 @@ public class GFF3Converter extends DataConverter
     }
 
     private void addOtherAttributes(GFF3Record record, String term,
-            Item feature, List<String> primeAttrList) {
+                                    Item feature, List<String> primeAttrList) {
         Map<String, String> attrMapOrg = configAttr.get(this.orgTaxonId);
         Map<String, String> attrMapClone = new HashMap<String, String>();
         // Deep copy of a map
@@ -518,11 +535,10 @@ public class GFF3Converter extends DataConverter
         }
     }
 
-    private void createLocation(GFF3Record record, String refId, Item seq,
-            ClassDescriptor cd, Item feature) throws ObjectStoreException {
+    private void createLocation(GFF3Record record, String refId, Item seq, ClassDescriptor cd, Item feature) throws ObjectStoreException {
         boolean makeLocation = record.getStart() >= 1 && record.getEnd() >= 1
-                && !dontCreateLocations
-                && handler.createLocations(record);
+            && !dontCreateLocations
+            && handler.createLocations(record);
         if (makeLocation) {
             Item location = getLocation(record, refId, seq);
             if (feature == null) {
@@ -534,8 +550,12 @@ public class GFF3Converter extends DataConverter
             int length = getLength(record);
             feature.setAttribute("length", String.valueOf(length));
             handler.setLocation(location);
-            if ("Chromosome".equals(seqClsName)
-                    && (cd.getFieldDescriptorByName("chromosome") != null)) {
+            // HACK - override Chromosome with Supercontig if seq contains "scaffold" and we've got Supercontig in the data model
+            String seqName = seq.getAttribute("primaryIdentifier").getValue();
+            if (seqName.toLowerCase().contains("scaffold") && (cd.getFieldDescriptorByName("supercontig")!=null)) {
+                feature.setReference("supercontig", seq.getIdentifier());
+                feature.setReference("supercontigLocation", location);
+            } else if ("Chromosome".equals(seqClsName) && (cd.getFieldDescriptorByName("chromosome")!=null)) {
                 feature.setReference("chromosome", seq.getIdentifier());
                 feature.setReference("chromosomeLocation", location);
             }
@@ -579,8 +599,8 @@ public class GFF3Converter extends DataConverter
                 if (parentIter.hasNext()) {
                     String primaryIdent  = feature.getAttribute("primaryIdentifier").getValue();
                     throw new RuntimeException("Feature has multiple relations for reference: "
-                            + refName + " for feature: " + feature.getClassName()
-                            + ", " + feature.getIdentifier() + ", " + primaryIdent);
+                                               + refName + " for feature: " + feature.getClassName()
+                                               + ", " + feature.getIdentifier() + ", " + primaryIdent);
                 }
             } else if (cld.getCollectionDescriptorByName(refName, true) != null) {
                 List<String> refIds = new ArrayList<String>();
@@ -590,13 +610,13 @@ public class GFF3Converter extends DataConverter
                 feature.setCollection(refName, refIds);
             } else if (parentIter.hasNext()) {
                 throw new RuntimeException("No '" + refName + "' reference/collection found in "
-                        + "class: " + clsName + " - is map configured correctly?");
+                                           + "class: " + clsName + " - is map configured correctly?");
             }
         }
     }
 
     private void setNames(List<?> names, String symbol, List<String> synonyms,
-            Set<Item> synonymsToAdd, String primaryIdentifier, Item feature, ClassDescriptor cd) {
+                          Set<Item> synonymsToAdd, String primaryIdentifier, Item feature, ClassDescriptor cd) {
         if (cd.getFieldDescriptorByName("symbol") == null) { // if symbol is not in the model
             String name = (String) names.get(0);
             feature.setAttribute("name", name);
@@ -713,8 +733,7 @@ public class GFF3Converter extends DataConverter
      * @return return/create item of class seqClsName for given identifier
      * @throws ObjectStoreException if the Item can't be stored
      */
-    private Item getSeq(String id)
-        throws ObjectStoreException {
+    private Item getSeq(String id) throws ObjectStoreException {
         // the seqHandler may have changed the id used, e.g. if using an IdResolver
         String identifier = sequenceHandler.getSeqIdentifier(id);
 
@@ -722,15 +741,16 @@ public class GFF3Converter extends DataConverter
             return null;
         }
 
-//        if (identifier.startsWith("chr")) {
-//            identifier = identifier.substring(3);
-//        }
+        // HACK to drop "chr" from chromosome name
+        // if (identifier.startsWith("chr")) {
+        //     identifier = identifier.substring(3);
+        // }
 
         Item seq = seqs.get(identifier);
-        if (seq == null) {
+        if (seq==null) {
             seq = sequenceHandler.makeSequenceItem(this, identifier);
             // sequence handler may choose not to create sequence
-            if (seq != null) {
+            if (seq!=null) {
                 seq.addReference(getOrgRef());
                 store(seq);
                 seqs.put(identifier, seq);
@@ -874,6 +894,15 @@ public class GFF3Converter extends DataConverter
         return id;
     }
 
-
+    /**
+     * Create an ID from the (first) Parent attribute and start and finish
+     */
+    static String createIdFromParent(GFF3Record record) {
+        if (record.getParents()==null) {
+            return null;
+        } else {
+            return record.getParents().get(0)+"."+record.getStart()+"-"+record.getEnd();
+        }
+    }
 
 }
